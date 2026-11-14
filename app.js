@@ -140,19 +140,20 @@ function renderDocument() {
 function customVisibility() { $('#custom-label').hidden = input(quote, 'split').value !== 'custom'; }
 
 function resetQuote() {
+  quote.reset();
   state.edit = null;
+  state.selected = null;
   state.drafts.quote = {};
   state.items = [emptyItem()];
   fill(quote);
   $('#generate').textContent = 'Generate Document';
   renderItems();
+  renderDocument();
+  if (typeof setMail === 'function') setMail('quote', null);
   customVisibility();
   save();
 }
 
-function setMail(mode, data) {
-  state.mail[mode] = data;
-  save();
   if (state.mode === mode) {
     renderMail();
     $('#mail').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
