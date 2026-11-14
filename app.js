@@ -6,7 +6,7 @@ const quote = $('#quote-form');
 const eft = $('#eft-form');
 const overdue = $('#overdue-form');
 const emptyItem = () => ({ name: '', spec: '', access: '', amount: '' });
-const initial = { mode: 'quote', force: false, jobs: [], drafts: {}, items: [emptyItem()], edit: null, selected: null, mail: {} };
+const initial = { mode: 'quote', jobs: [], drafts: {}, items: [emptyItem()], edit: null, selected: null, mail: {} };
 const key = 'fieldquote-v1';
 let state;
 try { state = { ...initial, ...JSON.parse(localStorage.getItem(key) || '{}') }; }
@@ -270,11 +270,11 @@ $('#jobs').addEventListener('click', event => {
   save();
 });
 
-async function runAI(button, prompt, complex = false) {
+async function runAI(button, prompt) {
   button.disabled = true;
   $('#source').textContent = 'Running AI…';
   try {
-    const result = await generate(prompt, { localOnly: state.force, complex });
+    const result = await generate(prompt);
     $('#source').textContent = result.label;
     if (!result.text) throw new Error('AI returned an empty response. Please try again.');
     return result.text;
@@ -410,8 +410,8 @@ $('#launch').onclick = () => {
 };
 
 document.querySelectorAll('[data-mode]').forEach(button => { button.onclick = () => showMode(button.dataset.mode); });
-$('#force').checked = state.force;
-$('#force').onchange = event => { state.force = event.target.checked; save(); };
+const offlineControl = $('#force')?.closest('label');
+if (offlineControl) offlineControl.remove();
 fill(quote, state.drafts.quote);
 renderItems();
 renderJobs();
@@ -427,6 +427,19 @@ setInterval(() => {
     if (job) button.disabled = !canEdit(job);
   });
 }, 1000);
-if (import.meta.env.PROD && 'serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(console.error);
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistration().then(async registration => {
+    if (!registration?.active?.scriptURL.endsWith('/sw.js')) return;
+    await registration.unregister();
+    if ('caches' in window) {
+      for (const key of await caches.keys()) if (key.startsWith('fieldquote-')) await caches.delete(key);
+    }
+  }).catch(console.error);
 }
+function updateConnection() {
+  if (!navigator.onLine) notify('FieldQuote AI requires an internet connection. Reconnect to extract line items or draft emails.', true);
+  else if ($('#notice').textContent.startsWith('FieldQuote AI requires')) notify('');
+}
+window.addEventListener('online', updateConnection);
+window.addEventListener('offline', updateConnection);
+updateConnection();
