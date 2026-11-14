@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { initializeAppCheck, CustomProvider, ReCaptchaV3Provider } from 'firebase/app-check';
-import { getAI, GoogleAIBackend, getGenerativeModel, InferenceMode } from 'firebase/ai';
+import { getAI, GoogleAIBackend, getGenerativeModel } from 'firebase/ai';
 
 let ai;
 function service() {
@@ -32,7 +32,6 @@ export async function generate(prompt) {
   if (!navigator.onLine) throw new Error('Connect to the internet to use FieldQuote AI, then try again.');
   const model = getGenerativeModel(service(), {
     model: 'gemini-3.5-flash-lite',
-    mode: InferenceMode.ONLY_IN_CLOUD,
   });
   const { response } = await model.generateContent(prompt);
   return { text: response.text().trim(), label: 'Cloud AI (Firebase AI Logic)' };
