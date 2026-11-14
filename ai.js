@@ -32,7 +32,7 @@ export async function generate(prompt, { localOnly, complex }) {
   const mode = localOnly || !navigator.onLine ? InferenceMode.ONLY_ON_DEVICE
     : complex ? InferenceMode.PREFER_IN_CLOUD : InferenceMode.PREFER_ON_DEVICE;
   const model = getGenerativeModel(service(), {
-    model: import.meta.env.VITE_FIREBASE_CLOUD_MODEL || 'gemini-2.5-flash', mode,
+    model: import.meta.env.VITE_FIREBASE_CLOUD_MODEL || 'gemini-3.5-flash-lite', mode,
   });
   if (typeof model.initializeDeviceModel === 'function') {
     const ready = model.initializeDeviceModel();
