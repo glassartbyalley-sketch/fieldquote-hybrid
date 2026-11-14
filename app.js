@@ -106,6 +106,7 @@ function renderJobs() {
       <p><small>${quoteId(job)} · ${date(job.updated)} SAST · ${job.accepted ? 'Accepted Revenue' : 'Awaiting acceptance'}</small></p>
       <div class="actions">
         <button type="button" class="secondary" data-action="view">View</button>
+        <button type="button" class="secondary" data-action="delete">Delete Quote</button>
         <button type="button" class="secondary" data-action="edit" ${canEdit(job) ? '' : 'disabled'}>Edit / Amend Quote (1-Hour Revision Window)</button>
         ${job.accepted ? '' : '<button type="button" data-action="accept">Proceed with Payment / Request Deposit</button>'}
       </div><small>Revision deadline ${date(expires(job))} SAST</small>
@@ -116,7 +117,7 @@ function renderDocument() {
   const el = $('#document');
   const job = findJob(state.selected);
   el.hidden = !job;
-  if (!job) return;
+  if (!job) { el.replaceChildren(); return; }
   const f = job.fields;
   el.innerHTML = `
     <div class="line-heading"><div><p class="eyebrow">${escape(f.contractor)}</p>
@@ -140,7 +141,6 @@ function renderDocument() {
 function customVisibility() { $('#custom-label').hidden = input(quote, 'split').value !== 'custom'; }
 
 function resetQuote(clearDocument = true) {
-  quote.reset();
   state.edit = null;
   if (clearDocument) state.selected = null;
   state.drafts.quote = {};
@@ -150,7 +150,8 @@ function resetQuote(clearDocument = true) {
   renderItems();
   if (clearDocument) {
     renderDocument();
-    setMail('quote', null);
+    delete state.mail.quote;
+    renderMail();
   }
   customVisibility();
   notify('');
@@ -169,7 +170,12 @@ function setMail(mode, data) {
 function renderMail() {
   const mail = state.mail[state.mode];
   $('#mail').hidden = !mail;
-  if (!mail) return;
+  if (!mail) {
+    $('#headers').replaceChildren();
+    $('#subject').value = '';
+    $('#body').value = '';
+    return;
+  }
   $('#headers').innerHTML = [['To', mail.to], ['CC', mail.cc?.join(', ')], ['Reply-To', mail.reply]].filter(([, value]) => value || mail.reply)
     .map(([name, value]) => `<dt>${name}</dt><dd>${escape(value || '(none)')}</dd>`).join('');
   $('#subject').value = mail.subject;
@@ -180,6 +186,7 @@ function clientDraft(job, amendment) {
   const reference = quoteId(job);
   const first = job.payments[0];
   return {
+    jobId: job.id,
     to: job.fields.email,
     subject: (amendment ? 'Amended document' : 'Payment request') + ' · ' + reference,
     body: amendment
@@ -222,6 +229,23 @@ $('#jobs').addEventListener('click', event => {
   if (!button) return;
   const job = findJob(button.closest('[data-job]').dataset.job);
   if (!job) return;
+  if (button.dataset.action === 'delete') {
+    if (!window.confirm('Delete this saved quote and remove it from Accepted Revenue if accepted?')) return;
+    state.jobs = state.jobs.filter(saved => saved.id !== job.id);
+    if (state.edit === job.id) resetQuote(false);
+    if (state.selected === job.id) state.selected = null;
+    const draft = state.mail.quote;
+    if (draft && (draft.jobId === job.id || (!draft.jobId && draft.subject.endsWith(quoteId(job))))) delete state.mail.quote;
+    if (input(eft, 'job').value === job.id) {
+      eft.reset();
+      state.drafts.eft = {};
+    }
+    renderJobs();
+    renderDocument();
+    renderMail();
+    save();
+    return;
+  }
   if (button.dataset.action === 'view') {
     state.selected = job.id;
     renderDocument();
