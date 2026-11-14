@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { initializeAppCheck, CustomProvider, ReCaptchaV3Provider } from 'firebase/app-check';
-import { getAI, GoogleAIBackend, getGenerativeModel, InferenceMode, InferenceSource } from 'firebase/ai';
+import { getAI, GoogleAIBackend, getGenerativeModel, InferenceMode } from 'firebase/ai';
 
 let ai;
 function service() {
@@ -28,22 +28,12 @@ function service() {
   return ai;
 }
 
-export async function generate(prompt, { localOnly, complex }) {
-  const mode = localOnly || !navigator.onLine ? InferenceMode.ONLY_ON_DEVICE
-    : complex ? InferenceMode.PREFER_IN_CLOUD : InferenceMode.PREFER_ON_DEVICE;
+export async function generate(prompt) {
+  if (!navigator.onLine) throw new Error('Connect to the internet to use FieldQuote AI, then try again.');
   const model = getGenerativeModel(service(), {
-    model: import.meta.env.VITE_FIREBASE_CLOUD_MODEL || 'gemini-3.5-flash-lite', mode,
+    model: import.meta.env.VITE_FIREBASE_CLOUD_MODEL || 'gemini-3.5-flash-lite',
+    mode: InferenceMode.ONLY_IN_CLOUD,
   });
-  if (typeof model.initializeDeviceModel === 'function') {
-    const ready = model.initializeDeviceModel();
-    if (mode === InferenceMode.ONLY_ON_DEVICE) await ready;
-    else void Promise.resolve(ready).catch(() => {});
-  }
   const { response } = await model.generateContent(prompt);
-  const source = response.inferenceSource;
-  const label = source === InferenceSource.ON_DEVICE ? 'On-Device (Local Chrome AI)'
-    : source === InferenceSource.IN_CLOUD ? 'Cloud Fallback (Firebase AI Logic)' : 'Inference source unavailable';
-  return { text: response.text().trim(), label };
+  return { text: response.text().trim(), label: 'Cloud AI (Firebase AI Logic)' };
 }
-
-
