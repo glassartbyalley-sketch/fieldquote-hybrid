@@ -139,24 +139,30 @@ function renderDocument() {
 
 function customVisibility() { $('#custom-label').hidden = input(quote, 'split').value !== 'custom'; }
 
-function resetQuote() {
+function resetQuote(clearDocument = true) {
   quote.reset();
   state.edit = null;
-  state.selected = null;
+  if (clearDocument) state.selected = null;
   state.drafts.quote = {};
   state.items = [emptyItem()];
   fill(quote);
   $('#generate').textContent = 'Generate Document';
   renderItems();
-  renderDocument();
-  if (typeof setMail === 'function') setMail('quote', null);
+  if (clearDocument) {
+    renderDocument();
+    setMail('quote', null);
+  }
   customVisibility();
+  notify('');
   save();
 }
 
+function setMail(mode, data) {
+  state.mail[mode] = data;
+  save();
   if (state.mode === mode) {
     renderMail();
-    $('#mail').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (data) $('#mail').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 }
 
@@ -206,7 +212,7 @@ quote.addEventListener('submit', event => {
     renderJobs();
     renderDocument();
     if (original) setMail('quote', clientDraft(job, true));
-    resetQuote();
+    resetQuote(false);
     $('#document').scrollIntoView({ block: 'start' });
   } catch (error) { notify(error.message, true); }
 });
@@ -291,7 +297,7 @@ $('#items').addEventListener('click', event => {
   save();
 });
 $('#add').onclick = () => { state.items.push(emptyItem()); renderItems(); $('#items .item:last-child input').focus(); save(); };
-$('#reset-quote').onclick = resetQuote;
+$('#reset-quote').onclick = () => resetQuote(true);
 input(quote, 'split').addEventListener('change', customVisibility);
 
 input(eft, 'job').addEventListener('change', event => {
@@ -400,4 +406,3 @@ setInterval(() => {
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(console.error);
 }
-
