@@ -31,7 +31,7 @@ function service() {
 export async function generate(prompt) {
   if (!navigator.onLine) throw new Error('Connect to the internet to use FieldQuote AI, then try again.');
   const model = getGenerativeModel(service(), {
-    model: import.meta.env.VITE_FIREBASE_CLOUD_MODEL || 'gemini-3.5-flash-lite',
+    model: 'gemini-3.5-flash-lite',
     mode: InferenceMode.ONLY_IN_CLOUD,
   });
   const { response } = await model.generateContent(prompt);
