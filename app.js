@@ -6,7 +6,7 @@ const quote = $('#quote-form');
 const eft = $('#eft-form');
 const overdue = $('#overdue-form');
 const emptyItem = () => ({ name: '', spec: '', access: '', amount: '' });
-const initial = { mode: 'quote', jobs: [], drafts: {}, items: [emptyItem()], edit: null, selected: null, mail: {} };
+const initial = { mode: 'quote', jobs: [], drafts: {}, items: [emptyItem()], edit: null, selected: null, mail: {}, history: [] };
 const key = 'fieldquote-v1';
 let state;
 try { state = { ...initial, ...JSON.parse(localStorage.getItem(key) || '{}') }; }
@@ -95,6 +95,7 @@ function quoteId(job) { return job.id.slice(0, 8).toUpperCase(); }
 
 function renderJobs() {
   const accepted = state.jobs.filter(job => job.accepted);
+  renderActivity();
   $('#pipeline').textContent = money(accepted.reduce((sum, job) => sum + job.total, 0));
   const select = input(eft, 'job');
   const selected = select.value;
@@ -205,12 +206,13 @@ quote.addEventListener('submit', event => {
     if (!state.items.length || state.items.some(item => !item.name.trim() || toCents(item.amount) === null)) throw new Error('Enter a name and valid amount for each line.');
     const cents = total(state.items);
     if (!cents) throw new Error('The total must be greater than zero.');
+    if (cents < (original?.paid || 0)) throw new Error('The revised total cannot be below payments already recorded.');
     const payments = paymentParts(fields, cents);
     const now = Date.now();
     if (original?.accepted && !window.confirm('Saving this amendment updates the accepted revenue to the revised quote total. Continue?')) return;
     const job = {
       id: original?.id ?? crypto.randomUUID(), created: original?.created ?? now, updated: now,
-      revision: (original?.revision ?? 0) + 1, accepted: original?.accepted ?? null,
+      revision: (original?.revision ?? 0) + 1, accepted: original?.accepted ?? null, paid: original?.paid || 0,
       fields, items: structuredClone(state.items), total: cents, payments,
     };
     if (original) state.jobs[state.jobs.indexOf(original)] = job;
@@ -218,7 +220,13 @@ quote.addEventListener('submit', event => {
     state.selected = job.id;
     renderJobs();
     renderDocument();
-    if (original) setMail('quote', clientDraft(job, true));
+    const preview = clientDraft(job, Boolean(original));
+    if (!original) {
+      preview.subject = 'Your quote · ' + quoteId(job);
+      preview.body = 'Hi ' + fields.client + ',\n\nPlease find your quote for ' + fields.site + '. The total is ' + money(job.total) + '.\n\nKind regards,\n' + fields.contractor;
+    }
+    setMail('quote', preview);
+    showDelivery('quote', preview);
     resetQuote(false);
     $('#document').scrollIntoView({ block: 'start' });
   } catch (error) { notify(error.message, true); }
@@ -265,7 +273,9 @@ $('#jobs').addEventListener('click', event => {
   if (button.dataset.action === 'accept' && !job.accepted) {
     job.accepted = Date.now();
     renderJobs();
-    setMail('quote', clientDraft(job, false));
+    const draft = clientDraft(job, false);
+    setMail('quote', draft);
+    showDelivery('quote', draft);
   }
   save();
 });
@@ -335,32 +345,34 @@ input(eft, 'job').addEventListener('change', event => {
   save();
 });
 
-async function emailParagraph(button, task, complex) {
-  const paragraph = await runAI(button, 'Write one short professional email paragraph in plain text. ' + task +
-    ' Do not include a greeting, sign-off, header, recipient, figure, date, reference, URL, banking detail or any new facts.', complex);
-  if (/\d|https?:|@|^\s*(subject|cc|to|reply-to):/im.test(paragraph) || paragraph.length > 700) {
-    throw new Error('AI added unexpected details. Try drafting again.');
-  }
-  return paragraph;
-}
-
-eft.addEventListener('submit', async event => {
+eft.addEventListener('submit', event => {
   event.preventDefault();
   const fields = asForm(eft);
   const received = toCents(fields.received);
   const remaining = toCents(fields.remaining);
   if (!fields.client.trim() || received === null || received <= 0 || remaining === null) return notify('Enter a client, the exact payment and the remaining balance.', true);
   try {
-    const paragraph = await emailParagraph(event.submitter, 'Thank a client warmly for their payment and invite them to ask questions.', false);
-    setMail('eft', {
+    const job = findJob(fields.job);
+    if (job && (!job.accepted || received > balance(job) || received + remaining !== balance(job))) {
+      throw new Error('The payment plus remaining balance must equal the outstanding balance of ' + money(balance(job)) + '.');
+    }
+    const paragraph = 'Thank you for your payment. Please let us know if you have any questions.';
+    const draft = {
       to: fields.email, subject: 'EFT payment confirmation',
       body: `Hi ${fields.client},\n\n${paragraph}\n\nWe confirm receipt of your EFT payment of ${money(received)}. ${remaining === 0 ? 'The balance is settled at ' + money(0) + '.' : 'The remaining balance is ' + money(remaining) + '.'}\n\nKind regards`,
-    });
-    notify('');
+    };
+    if (job) job.paid = (job.paid || 0) + received;
+    recordActivity('eft', fields.client, draft, received);
+    fill(eft);
+    updateBalance();
+    state.drafts.eft = {};
+    setMail('eft', draft);
+    showDelivery('eft', draft);
+    notify('Payment confirmation saved on this browser.');
   } catch (error) { notify(error.message, true); }
 });
 
-overdue.addEventListener('submit', async event => {
+overdue.addEventListener('submit', event => {
   event.preventDefault();
   const fields = asForm(overdue);
   const cc = fields.cc.split(/[\n,;]+/).map(value => value.trim()).filter(Boolean);
@@ -369,13 +381,17 @@ overdue.addEventListener('submit', async event => {
   if (!fields.client.trim() || !fields.bank.trim() || amount === null || amount <= 0) return notify('Enter a client, the overdue amount and banking details.', true);
   if (cc.length > 10 || cc.some(value => !validAddress(value))) return notify('Enter up to 10 valid CC email addresses.', true);
   try {
-    const paragraph = await emailParagraph(event.submitter, 'Write a courteous reminder that an invoice is overdue. ' +
-      (cc.length ? 'The recipients include body corporate trustees. Address the group professionally.' : 'Ask the client to arrange payment.'), cc.length > 0);
-    setMail('overdue', {
+    const paragraph = 'A quick reminder that payment is overdue. Please arrange payment using the details below.';
+    const draft = {
       to: fields.email, cc, reply: fields.reply, subject: 'Overdue payment reminder',
       body: `Hi ${fields.client},\n\n${paragraph}\n\nOverdue balance: ${money(amount)}\n\nBanking details\n${fields.bank.trim()}\n\nIf you’ve paid already or have a question, please contact ${fields.reply}.\n\nKind regards`,
-    });
-    notify('');
+    };
+    recordActivity('overdue', fields.client, draft, amount);
+    fill(overdue);
+    state.drafts.overdue = {};
+    setMail('overdue', draft);
+    showDelivery('overdue', draft);
+    notify('Reminder saved on this browser.');
   } catch (error) { notify(error.message, true); }
 });
 
@@ -396,17 +412,117 @@ $('#copy').onclick = async () => {
   try { await navigator.clipboard.writeText(text); notify('Email copied.'); }
   catch { notify('Clipboard access was denied. Select and copy the draft fields directly.', true); }
 };
-$('#launch').onclick = () => {
-  const mail = state.mail[state.mode];
-  if (!mail) return;
-  const query = [['subject', mail.subject], ['body', mail.body]];
-  if (mail.cc?.length) query.push(['cc', mail.cc.join(',')]);
-  if (mail.reply) {
-    query.push(['reply-to', mail.reply]);
-    notify('Check Reply-To in your email client. Some clients ignore this field in email links.');
+const balance = job => Math.max(0, job.total - (job.paid || 0));
+const activity = document.createElement('div');
+activity.id = 'demo-activity';
+$('#jobs').after(activity);
+const due = document.createElement('label');
+due.textContent = 'Payment due date (optional)';
+const dueInput = document.createElement('input');
+dueInput.type = 'date';
+dueInput.name = 'dueDate';
+due.append(dueInput);
+$('#custom-label').after(due);
+const dialog = document.createElement('dialog');
+dialog.className = 'card';
+dialog.style.width = 'min(620px, calc(100% - 32px))';
+dialog.setAttribute('aria-labelledby', 'demo-delivery-title');
+document.body.append(dialog);
+
+function recordActivity(mode, client, draft, amount) {
+  state.history.unshift({ mode, client, draft: structuredClone(draft), amount, time: Date.now() });
+  renderJobs();
+  save();
+}
+
+function openPayment(job) {
+  showMode('eft');
+  input(eft, 'job').value = job.id;
+  input(eft, 'job').dispatchEvent(new Event('change'));
+  input(eft, 'received').focus();
+}
+
+function showDelivery(mode, draft) {
+  const job = mode === 'quote' ? findJob(draft.jobId) : null;
+  dialog.innerHTML = '<h2 id="demo-delivery-title">Email preview · Demo only</h2>' +
+    '<p>This is the email FieldQuote would send once a sending service such as SMTP is connected. No email was sent.</p>' +
+    '<p><strong>To</strong> ' + escape(draft.to || 'No client email entered') + '</p>' +
+    (draft.cc?.length ? '<p><strong>CC</strong> ' + escape(draft.cc.join(', ')) + '</p>' : '') +
+    (draft.reply ? '<p><strong>Reply-To</strong> ' + escape(draft.reply) + '</p>' : '') +
+    '<p><strong>Subject</strong> ' + escape(draft.subject) + '</p><p class="preserve">' + escape(draft.body) + '</p>' +
+    '<div class="actions"><button data-demo="close">Done</button>' +
+    (job ? '<button class="secondary" data-demo="document">View / Download Document</button>' +
+    (canEdit(job) ? '<button class="secondary" data-demo="edit">Edit Quote</button>' : '') +
+    (balance(job) ? '<button class="secondary" data-demo="payment">' + (job.accepted ? 'Confirm EFT' : 'Accept Quote & Confirm EFT') + '</button>' : '') : '') + '</div>';
+  dialog.onclick = event => {
+    const action = event.target.closest('[data-demo]')?.dataset.demo;
+    if (!action) return;
+    dialog.close();
+    if (action === 'document') {
+      state.selected = job.id;
+      renderDocument();
+      save();
+      $('#document').scrollIntoView();
+    }
+    if (action === 'edit') $('#jobs').querySelector('[data-job="' + job.id + '"] [data-action="edit"]')?.click();
+    if (action === 'payment') {
+      if (!job.accepted) job.accepted = Date.now();
+      renderJobs();
+      save();
+      openPayment(job);
+    }
+  };
+  if (!dialog.open) dialog.showModal();
+}
+
+function renderActivity() {
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const unpaid = state.jobs.filter(job => job.accepted && balance(job) > 0);
+  activity.innerHTML = '<h3>Outstanding balances</h3>' + (unpaid.length ? unpaid.map(job => {
+    const late = job.fields.dueDate && job.fields.dueDate < today;
+    return '<div class="job"><p><strong>' + escape(job.fields.client) + '</strong> · ' + money(balance(job)) +
+      ' · ' + (late ? 'Overdue' : job.fields.dueDate ? 'Due ' + escape(job.fields.dueDate) : 'No due date') +
+      '</p><div class="actions"><button class="secondary" data-payment="' + escape(job.id) + '">I Received a Payment</button>' +
+      (late ? '<button class="secondary" data-reminder="' + escape(job.id) + '">Prepare Reminder</button>' : '') + '</div></div>';
+  }).join('') : '<p class="hint">No accepted jobs with a balance due.</p>') +
+    '<h3>Saved EFT confirmations and reminders</h3>' + (state.history.length ? state.history.map((entry, index) =>
+      '<div class="job"><p><strong>' + escape(entry.client) + '</strong> · ' + money(entry.amount) + '</p><p><small>' +
+      (entry.mode === 'eft' ? 'EFT confirmation' : 'Overdue reminder') + ' · ' + date(entry.time) + ' SAST</small></p>' +
+      '<button class="secondary" data-history="' + index + '">Preview Email</button></div>').join('') : '<p class="hint">Saved email previews will appear here.</p>');
+}
+
+activity.onclick = event => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (button.dataset.history !== undefined) {
+    const entry = state.history[Number(button.dataset.history)];
+    if (entry) showDelivery(entry.mode, entry.draft);
+    return;
   }
-  location.href = 'mailto:' + encodeURIComponent(mail.to || '').replace(/%40/g, '@') + '?' +
-    query.map(([key, value]) => key + '=' + encodeURIComponent(value)).join('&');
+  const job = findJob(button.dataset.payment || button.dataset.reminder);
+  if (!job) return;
+  if (button.dataset.payment) openPayment(job);
+  else {
+    showMode('overdue');
+    fill(overdue, { client: job.fields.client, email: job.fields.email, amount: (balance(job) / 100).toFixed(2), reply: job.fields.contractorEmail });
+    state.drafts.overdue = asForm(overdue);
+    save();
+  }
+};
+
+const remainingField = input(eft, 'remaining');
+const updateBalance = () => {
+  const job = findJob(input(eft, 'job').value);
+  const received = toCents(input(eft, 'received').value);
+  remainingField.readOnly = !!job;
+  if (job) remainingField.value = received === null ? '' : (Math.max(0, balance(job) - received) / 100).toFixed(2);
+};
+input(eft, 'received').addEventListener('input', updateBalance);
+input(eft, 'job').addEventListener('change', updateBalance);
+$('#launch').textContent = 'Preview Demo Delivery';
+$('#launch').onclick = () => {
+  const draft = state.mail[state.mode];
+  if (draft) showDelivery(state.mode, draft);
 };
 
 document.querySelectorAll('[data-mode]').forEach(button => { button.onclick = () => showMode(button.dataset.mode); });
@@ -416,6 +532,7 @@ fill(quote, state.drafts.quote);
 renderItems();
 renderJobs();
 fill(eft, state.drafts.eft);
+updateBalance();
 fill(overdue, state.drafts.overdue);
 if (state.edit) $('#generate').textContent = 'Save Amended Version';
 customVisibility();
